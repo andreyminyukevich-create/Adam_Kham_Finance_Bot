@@ -134,17 +134,22 @@ DENY_TEXT = "Извини, доступ закрыт 🙂"
 # =========================
 (
     ST_MENU,
+    ST_ADD_CHOOSE_ACCOUNT,
     ST_ADD_CHOOSE_TYPE,
     ST_EXP_CATEGORY,
     ST_EXP_SUBCATEGORY,
     ST_AMOUNT,
     ST_COMMENT,
     ST_INC_CATEGORY,
+    ST_ANALYSIS_CHOOSE_ACCOUNT,
     ST_ANALYSIS_KIND,
     ST_ANALYSIS_PERIOD,
-    ST_SET_BALANCE,
-    ST_SET_DEBTS,
-) = range(11)
+    ST_BALANCE_CHOOSE_ACCOUNT,
+    ST_BALANCE_EDIT,
+    ST_DEBTS_CHOOSE_ACCOUNT,
+    ST_DEBTS_CHOOSE_TYPE,
+    ST_DEBTS_EDIT,
+) = range(16)
 
 
 # =========================
@@ -172,17 +177,22 @@ def is_allowed(update: Update) -> bool:
     return user.id in USER_TG_IDS
 
 
-def kb_main(account_type: str = "personal") -> InlineKeyboardMarkup:
-    """Главное меню с переключателем типа счета"""
-    account_label = "💼 Бизнес" if account_type == "personal" else "👤 Личное"
-    switch_to = "business" if account_type == "personal" else "personal"
-    
+def kb_main() -> InlineKeyboardMarkup:
+    """Главное меню"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Внести транзакцию", callback_data="menu:add")],
         [InlineKeyboardButton("📊 Анализ", callback_data="menu:analysis")],
-        [InlineKeyboardButton("💰 Баланс", callback_data="menu:set_balance")],
-        [InlineKeyboardButton("💳 Долги", callback_data="menu:set_debts")],
-        [InlineKeyboardButton(f"Переключить на {account_label}", callback_data=f"switch:{switch_to}")],
+        [InlineKeyboardButton("💰 Сверить баланс", callback_data="menu:balance")],
+        [InlineKeyboardButton("💳 Долги", callback_data="menu:debts")],
+    ])
+
+
+def kb_choose_account() -> InlineKeyboardMarkup:
+    """Выбор типа счета"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👤 Личные финансы", callback_data="account:personal")],
+        [InlineKeyboardButton("💼 Бизнес", callback_data="account:business")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back:menu")],
     ])
 
 
@@ -190,7 +200,7 @@ def kb_choose_type() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➖ Затраты", callback_data="type:expense")],
         [InlineKeyboardButton("➕ Доход", callback_data="type:income")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back:menu")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back:choose_account")],
     ])
 
 
@@ -250,7 +260,7 @@ def kb_analysis_kind() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➖ Затраты", callback_data="akind:expense")],
         [InlineKeyboardButton("➕ Доходы", callback_data="akind:income")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back:menu")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back:analysis_account")],
     ])
 
 
@@ -260,6 +270,28 @@ def kb_analysis_period() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("В этом месяце", callback_data="aperiod:month")],
         [InlineKeyboardButton("В этом году", callback_data="aperiod:year")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back:analysis_kind")],
+    ])
+
+
+def kb_balance_actions() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Изменить баланс", callback_data="balance:edit")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back:menu")],
+    ])
+
+
+def kb_debts_type() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 Долги передо мной", callback_data="debts_type:owe_me")],
+        [InlineKeyboardButton("💳 Мои долги", callback_data="debts_type:i_owe")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back:debts_account")],
+    ])
+
+
+def kb_debts_actions() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Изменить", callback_data="debts:edit")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="back:debts_type")],
     ])
 
 
@@ -324,28 +356,52 @@ async def gas_request(payload: Dict[str, Any], user_id: int) -> Dict[str, Any]:
             return data["data"]
 
 
-async def month_screen_text(account_type: str, user_id: int) -> str:
-    """Получить текст главного экрана"""
-    s = await gas_request({"cmd": "summary_month", "account_type": account_type}, user_id)
+async def month_screen_text(user_id: int) -> str:
+    """Получить текст главного экрана с обоими типами счетов"""
+    s = await gas_request({"cmd": "summary_month"}, user_id)
     
-    account_label = "💼 Бизнес" if account_type == "business" else "👤 Личное"
     month = s.get("month_label", "Текущий месяц")
-    exp = s.get("expenses", 0)
-    inc = s.get("incomes", 0)
-    bal_month = s.get("balance_month", 0)
-    bal_start = s.get("balance_start", 0)
-    bal_current = s.get("balance_current", 0)
-    debts = s.get("debts", 0)
+    
+    # Личные финансы
+    p = s.get("personal", {})
+    p_exp = p.get("expenses", 0)
+    p_inc = p.get("incomes", 0)
+    p_bal_month = p.get("balance_month", 0)
+    p_bal_start = p.get("balance_start", 0)
+    p_bal_current = p.get("balance_current", 0)
+    p_debts_owe_me = p.get("debts_owe_me", 0)
+    p_debts_i_owe = p.get("debts_i_owe", 0)
+    
+    # Бизнес
+    b = s.get("business", {})
+    b_exp = b.get("expenses", 0)
+    b_inc = b.get("incomes", 0)
+    b_bal_month = b.get("balance_month", 0)
+    b_bal_start = b.get("balance_start", 0)
+    b_bal_current = b.get("balance_current", 0)
+    b_debts_owe_me = b.get("debts_owe_me", 0)
+    b_debts_i_owe = b.get("debts_i_owe", 0)
     
     return (
-        f"<b>{account_label}</b>\n"
+        f"<b>👤 Личные финансы</b>\n"
         f"<b>{month}</b>\n\n"
-        f"💰 Начальный баланс: <b>{bal_start:,.2f}</b> ₽\n"
-        f"➖ Расходы: <b>{exp:,.2f}</b> ₽\n"
-        f"➕ Доходы: <b>{inc:,.2f}</b> ₽\n"
-        f"🟰 За месяц: <b>{bal_month:,.2f}</b> ₽\n"
-        f"💵 Текущий баланс: <b>{bal_current:,.2f}</b> ₽\n"
-        f"💳 Долги: <b>{debts:,.2f}</b> ₽"
+        f"💰 Начальный баланс: <b>{p_bal_start:,.2f}</b> ₽\n"
+        f"➖ Расходы: <b>{p_exp:,.2f}</b> ₽\n"
+        f"➕ Доходы: <b>{p_inc:,.2f}</b> ₽\n"
+        f"🟰 За месяц: <b>{p_bal_month:,.2f}</b> ₽\n"
+        f"💵 Текущий баланс: <b>{p_bal_current:,.2f}</b> ₽\n"
+        f"💳 Мои долги: <b>{p_debts_i_owe:,.2f}</b> ₽\n"
+        f"💰 Долги передо мной: <b>{p_debts_owe_me:,.2f}</b> ₽\n\n"
+        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>💼 Бизнес</b>\n"
+        f"<b>{month}</b>\n\n"
+        f"💰 Начальный баланс: <b>{b_bal_start:,.2f}</b> ₽\n"
+        f"➖ Расходы: <b>{b_exp:,.2f}</b> ₽\n"
+        f"➕ Доходы: <b>{b_inc:,.2f}</b> ₽\n"
+        f"🟰 За месяц: <b>{b_bal_month:,.2f}</b> ₽\n"
+        f"💵 Текущий баланс: <b>{b_bal_current:,.2f}</b> ₽\n"
+        f"💳 Мои долги: <b>{b_debts_i_owe:,.2f}</b> ₽\n"
+        f"💰 Долги передо мной: <b>{b_debts_owe_me:,.2f}</b> ₽"
     ).replace(",", " ")
 
 
@@ -363,11 +419,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data.clear()
-    context.user_data["account_type"] = "personal"
     
     user_id = update.effective_user.id
-    txt = await month_screen_text("personal", user_id)
-    await update.message.reply_text(txt, reply_markup=kb_main("personal"), parse_mode=ParseMode.HTML)
+    txt = await month_screen_text(user_id)
+    await update.message.reply_text(txt, reply_markup=kb_main(), parse_mode=ParseMode.HTML)
     
     return ST_MENU
 
@@ -380,46 +435,26 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = update.callback_query
     await q.answer()
-    
-    user_id = update.effective_user.id
-    account_type = context.user_data.get("account_type", "personal")
-
-    if q.data.startswith("switch:"):
-        new_type = q.data.split(":")[1]
-        context.user_data["account_type"] = new_type
-        txt = await month_screen_text(new_type, user_id)
-        await q.edit_message_text(txt, reply_markup=kb_main(new_type), parse_mode=ParseMode.HTML)
-        return ST_MENU
 
     if q.data == "menu:add":
-        await q.edit_message_text("Окей 🙂 Что вносим?", reply_markup=kb_choose_type())
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
         context.user_data["working_message_id"] = q.message.message_id
-        return ST_ADD_CHOOSE_TYPE
+        return ST_ADD_CHOOSE_ACCOUNT
 
     if q.data == "menu:analysis":
-        await q.edit_message_text("Что посмотрим?", reply_markup=kb_analysis_kind())
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
         context.user_data["working_message_id"] = q.message.message_id
-        return ST_ANALYSIS_KIND
+        return ST_ANALYSIS_CHOOSE_ACCOUNT
 
-    if q.data == "menu:set_balance":
-        account_label = "бизнеса" if account_type == "business" else "личный"
-        await q.edit_message_text(
-            f"Какой у тебя сейчас баланс ({account_label})? 💰\n\n"
-            f"Напиши сумму (например: 50000 или 50к)",
-            parse_mode=ParseMode.HTML
-        )
+    if q.data == "menu:balance":
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
         context.user_data["working_message_id"] = q.message.message_id
-        return ST_SET_BALANCE
+        return ST_BALANCE_CHOOSE_ACCOUNT
 
-    if q.data == "menu:set_debts":
-        account_label = "бизнеса" if account_type == "business" else "личные"
-        await q.edit_message_text(
-            f"Сколько у тебя долгов ({account_label})? 💳\n\n"
-            f"Напиши сумму (например: 10000 или 10к)",
-            parse_mode=ParseMode.HTML
-        )
+    if q.data == "menu:debts":
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
         context.user_data["working_message_id"] = q.message.message_id
-        return ST_SET_DEBTS
+        return ST_DEBTS_CHOOSE_ACCOUNT
 
     return ST_MENU
 
@@ -429,36 +464,64 @@ async def back_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     
     user_id = update.effective_user.id
-    account_type = context.user_data.get("account_type", "personal")
 
     if q.data == "back:menu":
         await delete_working_message(context, update.effective_chat.id)
-        txt = await month_screen_text(account_type, user_id)
-        await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
+        txt = await month_screen_text(user_id)
+        await update.effective_chat.send_message(txt, reply_markup=kb_main(), parse_mode=ParseMode.HTML)
         return ST_MENU
+
+    if q.data == "back:choose_account":
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
+        return ST_ADD_CHOOSE_ACCOUNT
 
     if q.data == "back:choose_type":
         await q.edit_message_text("Окей 🙂 Что вносим?", reply_markup=kb_choose_type())
         return ST_ADD_CHOOSE_TYPE
 
     if q.data == "back:exp_cat":
+        account_type = context.user_data.get("account_type", "personal")
         categories = await get_categories(account_type, user_id)
         await q.edit_message_text(random.choice(PH_EXP_CAT), reply_markup=kb_expense_categories(categories["expenses"]))
         return ST_EXP_CATEGORY
+
+    if q.data == "back:analysis_account":
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
+        return ST_ANALYSIS_CHOOSE_ACCOUNT
 
     if q.data == "back:analysis_kind":
         await q.edit_message_text("Что посмотрим?", reply_markup=kb_analysis_kind())
         return ST_ANALYSIS_KIND
 
+    if q.data == "back:debts_account":
+        await q.edit_message_text("Выбери тип счета:", reply_markup=kb_choose_account())
+        return ST_DEBTS_CHOOSE_ACCOUNT
+
+    if q.data == "back:debts_type":
+        await q.edit_message_text("Какие долги?", reply_markup=kb_debts_type())
+        return ST_DEBTS_CHOOSE_TYPE
+
     return ST_MENU
+
+
+# ========== ВНЕСЕНИЕ ТРАНЗАКЦИИ ==========
+
+async def add_choose_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    account_type = q.data.split(":")[1]
+    context.user_data["account_type"] = account_type
+    context.user_data.pop("tx", None)
+    context.user_data["tx"] = {}
+
+    await q.edit_message_text("Окей 🙂 Что вносим?", reply_markup=kb_choose_type())
+    return ST_ADD_CHOOSE_TYPE
 
 
 async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
-    context.user_data.pop("tx", None)
-    context.user_data["tx"] = {}
     
     user_id = update.effective_user.id
     account_type = context.user_data.get("account_type", "personal")
@@ -645,14 +708,28 @@ async def save_and_finish_(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if comment:
         detail += f"\nКоммент: {comment}"
 
-    await update.effective_chat.send_message(f"{header}\n{detail}")
+    account_label = "💼 Бизнес" if account_type == "business" else "👤 Личные финансы"
+    await update.effective_chat.send_message(f"{header}\n{account_label}\n{detail}")
 
-    txt_month = await month_screen_text(account_type, user_id)
+    txt_month = await month_screen_text(user_id)
     await update.effective_chat.send_message(
         txt_month,
-        reply_markup=kb_main(account_type),
+        reply_markup=kb_main(),
         parse_mode=ParseMode.HTML
     )
+
+
+# ========== АНАЛИЗ ==========
+
+async def analysis_choose_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    account_type = q.data.split(":")[1]
+    context.user_data["account_type"] = account_type
+
+    await q.edit_message_text("Что посмотрим?", reply_markup=kb_analysis_kind())
+    return ST_ANALYSIS_KIND
 
 
 async def analysis_kind(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -685,21 +762,59 @@ async def analysis_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     label_map = {"today": "Сегодня", "month": "В этом месяце", "year": "В этом году"}
     kind_label = "Затраты" if kind == "расход" else "Доходы"
+    account_label = "💼 Бизнес" if account_type == "business" else "👤 Личные финансы"
 
     total = res.get("total", 0)
-    text = f"<b>{kind_label}</b> — <b>{label_map.get(period, period)}</b>\nСумма: <b>{total:,.2f}</b> ₽"
+    text = f"<b>{account_label}</b>\n<b>{kind_label}</b> — <b>{label_map.get(period, period)}</b>\nСумма: <b>{total:,.2f}</b> ₽"
     text = text.replace(",", " ")
 
     await delete_working_message(context, update.effective_chat.id)
     await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
     
-    txt = await month_screen_text(account_type, user_id)
-    await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
+    txt = await month_screen_text(user_id)
+    await update.effective_chat.send_message(txt, reply_markup=kb_main(), parse_mode=ParseMode.HTML)
     
     return ST_MENU
 
 
-async def set_balance_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========== СВЕРИТЬ БАЛАНС ==========
+
+async def balance_choose_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    user_id = update.effective_user.id
+    account_type = q.data.split(":")[1]
+    context.user_data["account_type"] = account_type
+
+    balance = await gas_request({"cmd": "get_balance", "account_type": account_type}, user_id)
+    bal = balance.get("balance", 0)
+    
+    account_label = "бизнеса" if account_type == "business" else "личных финансов"
+    
+    text = f"Текущий баланс ({account_label}):\n<b>{bal:,.2f}</b> ₽".replace(",", " ")
+    await q.edit_message_text(text, reply_markup=kb_balance_actions(), parse_mode=ParseMode.HTML)
+    
+    return ST_BALANCE_CHOOSE_ACCOUNT
+
+
+async def balance_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    account_type = context.user_data.get("account_type", "personal")
+    account_label = "бизнеса" if account_type == "business" else "личных финансов"
+
+    await q.edit_message_text(
+        f"Какой у тебя сейчас баланс ({account_label})? 💰\n\n"
+        f"Напиши сумму (например: 50000 или 50к)",
+        parse_mode=ParseMode.HTML
+    )
+    context.user_data["working_message_id"] = q.message.message_id
+    return ST_BALANCE_EDIT
+
+
+async def balance_edit_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.message.reply_text(DENY_TEXT)
         return ConversationHandler.END
@@ -717,26 +832,80 @@ async def set_balance_received(update: Update, context: ContextTypes.DEFAULT_TYP
             "Не понял сумму 🙈\nНапиши, пожалуйста, например: 50000 / 50 000 / 50к"
         )
         context.user_data["working_message_id"] = msg.message_id
-        return ST_SET_BALANCE
+        return ST_BALANCE_EDIT
 
     account_type = context.user_data.get("account_type", "personal")
     await gas_request({"cmd": "set_balance", "amount": amt, "account_type": account_type}, user_id)
 
     await delete_working_message(context, update.effective_chat.id)
 
-    account_label = "бизнеса" if account_type == "business" else "личный"
+    account_label = "бизнеса" if account_type == "business" else "личных финансов"
     await update.effective_chat.send_message(
         f"Отлично! ✅ Баланс ({account_label}) установлен: <b>{amt:,.2f}</b> ₽".replace(",", " "),
         parse_mode=ParseMode.HTML
     )
     
-    txt = await month_screen_text(account_type, user_id)
-    await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
+    txt = await month_screen_text(user_id)
+    await update.effective_chat.send_message(txt, reply_markup=kb_main(), parse_mode=ParseMode.HTML)
     
     return ST_MENU
 
 
-async def set_debts_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ========== ДОЛГИ ==========
+
+async def debts_choose_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    account_type = q.data.split(":")[1]
+    context.user_data["account_type"] = account_type
+
+    await q.edit_message_text("Какие долги?", reply_markup=kb_debts_type())
+    return ST_DEBTS_CHOOSE_TYPE
+
+
+async def debts_choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    user_id = update.effective_user.id
+    debt_type = q.data.split(":")[1]
+    context.user_data["debt_type"] = debt_type
+    
+    account_type = context.user_data.get("account_type", "personal")
+
+    debts = await gas_request({"cmd": "get_debts", "account_type": account_type, "debt_type": debt_type}, user_id)
+    debt_amount = debts.get("debts", 0)
+    
+    account_label = "бизнеса" if account_type == "business" else "личных финансов"
+    debt_label = "Долги передо мной" if debt_type == "owe_me" else "Мои долги"
+    
+    text = f"{debt_label} ({account_label}):\n<b>{debt_amount:,.2f}</b> ₽".replace(",", " ")
+    await q.edit_message_text(text, reply_markup=kb_debts_actions(), parse_mode=ParseMode.HTML)
+    
+    return ST_DEBTS_CHOOSE_TYPE
+
+
+async def debts_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    account_type = context.user_data.get("account_type", "personal")
+    debt_type = context.user_data.get("debt_type", "i_owe")
+    
+    account_label = "бизнеса" if account_type == "business" else "личных финансов"
+    debt_label = "долгов передо мной" if debt_type == "owe_me" else "долгов"
+
+    await q.edit_message_text(
+        f"Сколько у тебя {debt_label} ({account_label})? 💳\n\n"
+        f"Напиши сумму (например: 10000 или 10к)",
+        parse_mode=ParseMode.HTML
+    )
+    context.user_data["working_message_id"] = q.message.message_id
+    return ST_DEBTS_EDIT
+
+
+async def debts_edit_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         await update.message.reply_text(DENY_TEXT)
         return ConversationHandler.END
@@ -754,24 +923,30 @@ async def set_debts_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "Не понял сумму 🙈\nНапиши, пожалуйста, например: 10000 / 10 000 / 10к"
         )
         context.user_data["working_message_id"] = msg.message_id
-        return ST_SET_DEBTS
+        return ST_DEBTS_EDIT
 
     account_type = context.user_data.get("account_type", "personal")
-    await gas_request({"cmd": "set_debts", "amount": amt, "account_type": account_type}, user_id)
+    debt_type = context.user_data.get("debt_type", "i_owe")
+    
+    await gas_request({"cmd": "set_debts", "amount": amt, "account_type": account_type, "debt_type": debt_type}, user_id)
 
     await delete_working_message(context, update.effective_chat.id)
 
-    account_label = "бизнеса" if account_type == "business" else "личные"
+    account_label = "бизнеса" if account_type == "business" else "личных финансов"
+    debt_label = "Долги передо мной" if debt_type == "owe_me" else "Мои долги"
+    
     await update.effective_chat.send_message(
-        f"Отлично! ✅ Долги ({account_label}) установлены: <b>{amt:,.2f}</b> ₽".replace(",", " "),
+        f"Отлично! ✅ {debt_label} ({account_label}) установлены: <b>{amt:,.2f}</b> ₽".replace(",", " "),
         parse_mode=ParseMode.HTML
     )
     
-    txt = await month_screen_text(account_type, user_id)
-    await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
+    txt = await month_screen_text(user_id)
+    await update.effective_chat.send_message(txt, reply_markup=kb_main(), parse_mode=ParseMode.HTML)
     
     return ST_MENU
 
+
+# ========== HELP & ERROR ==========
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
@@ -781,9 +956,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Кнопки внизу 🙂\n"
         "• Внести транзакцию\n"
         "• Анализ\n"
-        "• Установить баланс\n"
-        "• Установить долги\n"
-        "• Переключить личное/бизнес"
+        "• Сверить баланс\n"
+        "• Долги"
     )
 
 
@@ -803,7 +977,11 @@ def build_app() -> Application:
         entry_points=[CommandHandler("start", cmd_start)],
         states={
             ST_MENU: [
-                CallbackQueryHandler(on_menu, pattern=r"^(menu:|switch:)"),
+                CallbackQueryHandler(on_menu, pattern=r"^menu:"),
+            ],
+            ST_ADD_CHOOSE_ACCOUNT: [
+                CallbackQueryHandler(add_choose_account, pattern=r"^account:"),
+                CallbackQueryHandler(back_router, pattern=r"^back:"),
             ],
             ST_ADD_CHOOSE_TYPE: [
                 CallbackQueryHandler(choose_type, pattern=r"^type:"),
@@ -828,6 +1006,10 @@ def build_app() -> Application:
                 CallbackQueryHandler(comment_skip, pattern=r"^comment:skip$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, comment_received),
             ],
+            ST_ANALYSIS_CHOOSE_ACCOUNT: [
+                CallbackQueryHandler(analysis_choose_account, pattern=r"^account:"),
+                CallbackQueryHandler(back_router, pattern=r"^back:"),
+            ],
             ST_ANALYSIS_KIND: [
                 CallbackQueryHandler(analysis_kind, pattern=r"^akind:"),
                 CallbackQueryHandler(back_router, pattern=r"^back:"),
@@ -836,11 +1018,25 @@ def build_app() -> Application:
                 CallbackQueryHandler(analysis_period, pattern=r"^aperiod:"),
                 CallbackQueryHandler(back_router, pattern=r"^back:"),
             ],
-            ST_SET_BALANCE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, set_balance_received),
+            ST_BALANCE_CHOOSE_ACCOUNT: [
+                CallbackQueryHandler(balance_choose_account, pattern=r"^account:"),
+                CallbackQueryHandler(balance_edit_start, pattern=r"^balance:edit$"),
+                CallbackQueryHandler(back_router, pattern=r"^back:"),
             ],
-            ST_SET_DEBTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, set_debts_received),
+            ST_BALANCE_EDIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, balance_edit_received),
+            ],
+            ST_DEBTS_CHOOSE_ACCOUNT: [
+                CallbackQueryHandler(debts_choose_account, pattern=r"^account:"),
+                CallbackQueryHandler(back_router, pattern=r"^back:"),
+            ],
+            ST_DEBTS_CHOOSE_TYPE: [
+                CallbackQueryHandler(debts_choose_type, pattern=r"^debts_type:"),
+                CallbackQueryHandler(debts_edit_start, pattern=r"^debts:edit$"),
+                CallbackQueryHandler(back_router, pattern=r"^back:"),
+            ],
+            ST_DEBTS_EDIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, debts_edit_received),
             ],
         },
         fallbacks=[CommandHandler("help", cmd_help)],
