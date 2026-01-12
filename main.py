@@ -43,14 +43,6 @@ if USER_TG_IDS_STR:
 else:
     USER_TG_IDS = []
 
-# Для backward compatibility - если указан старый USER_TG_ID
-USER_TG_ID_SINGLE = os.getenv("USER_TG_ID", "").strip()
-if USER_TG_ID_SINGLE and int(USER_TG_ID_SINGLE) not in USER_TG_IDS:
-    USER_TG_IDS.append(int(USER_TG_ID_SINGLE))
-
-# Для GAS запросов берем первого из списка (главный пользователь)
-USER_TG_ID = USER_TG_IDS[0] if USER_TG_IDS else 0
-
 # Для webhook (Railway)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 PORT = int(os.getenv("PORT", "8080"))
@@ -313,9 +305,10 @@ def parse_amount(text: str) -> Optional[float]:
 # =========================
 # GAS API
 # =========================
-async def gas_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def gas_request(payload: Dict[str, Any], user_id: int) -> Dict[str, Any]:
+    """Отправить запрос в GAS с указанным user_id"""
     payload = dict(payload)
-    payload["user_id"] = USER_TG_ID
+    payload["user_id"] = user_id
 
     timeout = aiohttp.ClientTimeout(total=12)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -331,9 +324,9 @@ async def gas_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             return data["data"]
 
 
-async def month_screen_text(account_type: str = "personal") -> str:
+async def month_screen_text(account_type: str, user_id: int) -> str:
     """Получить текст главного экрана"""
-    s = await gas_request({"cmd": "summary_month", "account_type": account_type})
+    s = await gas_request({"cmd": "summary_month", "account_type": account_type}, user_id)
     
     account_label = "💼 Бизнес" if account_type == "business" else "👤 Личное"
     month = s.get("month_label", "Текущий месяц")
@@ -356,9 +349,9 @@ async def month_screen_text(account_type: str = "personal") -> str:
     ).replace(",", " ")
 
 
-async def get_categories(account_type: str = "personal") -> Dict[str, Any]:
+async def get_categories(account_type: str, user_id: int) -> Dict[str, Any]:
     """Получить категории для выбранного типа счета"""
-    return await gas_request({"cmd": "get_categories", "account_type": account_type})
+    return await gas_request({"cmd": "get_categories", "account_type": account_type}, user_id)
 
 
 # =========================
@@ -370,9 +363,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data.clear()
-    context.user_data["account_type"] = "personal"  # По умолчанию личный счет
+    context.user_data["account_type"] = "personal"
     
-    txt = await month_screen_text("personal")
+    user_id = update.effective_user.id
+    txt = await month_screen_text("personal", user_id)
     await update.message.reply_text(txt, reply_markup=kb_main("personal"), parse_mode=ParseMode.HTML)
     
     return ST_MENU
@@ -387,13 +381,13 @@ async def on_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     
+    user_id = update.effective_user.id
     account_type = context.user_data.get("account_type", "personal")
 
-    # Переключение типа счета
     if q.data.startswith("switch:"):
         new_type = q.data.split(":")[1]
         context.user_data["account_type"] = new_type
-        txt = await month_screen_text(new_type)
+        txt = await month_screen_text(new_type, user_id)
         await q.edit_message_text(txt, reply_markup=kb_main(new_type), parse_mode=ParseMode.HTML)
         return ST_MENU
 
@@ -434,11 +428,12 @@ async def back_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     
+    user_id = update.effective_user.id
     account_type = context.user_data.get("account_type", "personal")
 
     if q.data == "back:menu":
         await delete_working_message(context, update.effective_chat.id)
-        txt = await month_screen_text(account_type)
+        txt = await month_screen_text(account_type, user_id)
         await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
         return ST_MENU
 
@@ -447,7 +442,7 @@ async def back_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ST_ADD_CHOOSE_TYPE
 
     if q.data == "back:exp_cat":
-        categories = await get_categories(account_type)
+        categories = await get_categories(account_type, user_id)
         await q.edit_message_text(random.choice(PH_EXP_CAT), reply_markup=kb_expense_categories(categories["expenses"]))
         return ST_EXP_CATEGORY
 
@@ -465,8 +460,9 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("tx", None)
     context.user_data["tx"] = {}
     
+    user_id = update.effective_user.id
     account_type = context.user_data.get("account_type", "personal")
-    categories = await get_categories(account_type)
+    categories = await get_categories(account_type, user_id)
 
     if q.data == "type:expense":
         context.user_data["categories"] = categories
@@ -612,6 +608,7 @@ async def save_and_finish_(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await delete_working_message(context, update.effective_chat.id)
     
+    user_id = update.effective_user.id
     tx = context.user_data.get("tx", {})
     account_type = context.user_data.get("account_type", "personal")
     
@@ -625,10 +622,9 @@ async def save_and_finish_(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "account_type": account_type
     }
 
-    await gas_request(payload)
+    await gas_request(payload, user_id)
 
     if tx.get("type") == "расход":
-        # Проверяем - если это транспорт, даем спецфразу
         category = tx.get("category", "").lower()
         is_car = "транспорт" in category or "авто" in category or "машин" in category or "логистика" in category
         
@@ -651,7 +647,7 @@ async def save_and_finish_(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_chat.send_message(f"{header}\n{detail}")
 
-    txt_month = await month_screen_text(account_type)
+    txt_month = await month_screen_text(account_type, user_id)
     await update.effective_chat.send_message(
         txt_month,
         reply_markup=kb_main(account_type),
@@ -680,11 +676,12 @@ async def analysis_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
+    user_id = update.effective_user.id
     period = q.data.split(":")[1]
     kind = context.user_data.get("analysis_kind", "расход")
     account_type = context.user_data.get("account_type", "personal")
 
-    res = await gas_request({"cmd": "analysis", "kind": kind, "period": period, "account_type": account_type})
+    res = await gas_request({"cmd": "analysis", "kind": kind, "period": period, "account_type": account_type}, user_id)
 
     label_map = {"today": "Сегодня", "month": "В этом месяце", "year": "В этом году"}
     kind_label = "Затраты" if kind == "расход" else "Доходы"
@@ -696,7 +693,7 @@ async def analysis_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_working_message(context, update.effective_chat.id)
     await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
     
-    txt = await month_screen_text(account_type)
+    txt = await month_screen_text(account_type, user_id)
     await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
     
     return ST_MENU
@@ -712,6 +709,7 @@ async def set_balance_received(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
+    user_id = update.effective_user.id
     amt = parse_amount(update.message.text)
     if amt is None or amt < 0:
         await delete_working_message(context, update.effective_chat.id)
@@ -722,7 +720,7 @@ async def set_balance_received(update: Update, context: ContextTypes.DEFAULT_TYP
         return ST_SET_BALANCE
 
     account_type = context.user_data.get("account_type", "personal")
-    await gas_request({"cmd": "set_balance", "amount": amt, "account_type": account_type})
+    await gas_request({"cmd": "set_balance", "amount": amt, "account_type": account_type}, user_id)
 
     await delete_working_message(context, update.effective_chat.id)
 
@@ -732,7 +730,7 @@ async def set_balance_received(update: Update, context: ContextTypes.DEFAULT_TYP
         parse_mode=ParseMode.HTML
     )
     
-    txt = await month_screen_text(account_type)
+    txt = await month_screen_text(account_type, user_id)
     await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
     
     return ST_MENU
@@ -748,6 +746,7 @@ async def set_debts_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception:
         pass
 
+    user_id = update.effective_user.id
     amt = parse_amount(update.message.text)
     if amt is None or amt < 0:
         await delete_working_message(context, update.effective_chat.id)
@@ -758,7 +757,7 @@ async def set_debts_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ST_SET_DEBTS
 
     account_type = context.user_data.get("account_type", "personal")
-    await gas_request({"cmd": "set_debts", "amount": amt, "account_type": account_type})
+    await gas_request({"cmd": "set_debts", "amount": amt, "account_type": account_type}, user_id)
 
     await delete_working_message(context, update.effective_chat.id)
 
@@ -768,7 +767,7 @@ async def set_debts_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode=ParseMode.HTML
     )
     
-    txt = await month_screen_text(account_type)
+    txt = await month_screen_text(account_type, user_id)
     await update.effective_chat.send_message(txt, reply_markup=kb_main(account_type), parse_mode=ParseMode.HTML)
     
     return ST_MENU
@@ -877,4 +876,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-```
