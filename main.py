@@ -35,7 +35,21 @@ logger = logging.getLogger("finance-bot")
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 SCRIPT_URL = os.getenv("SCRIPT_URL", "").strip()
-USER_TG_ID = int(os.getenv("USER_TG_ID", "0").strip() or 0)
+
+# Список разрешенных user_id через запятую
+USER_TG_IDS_STR = os.getenv("USER_TG_IDS", "").strip()
+if USER_TG_IDS_STR:
+    USER_TG_IDS = [int(x.strip()) for x in USER_TG_IDS_STR.split(",") if x.strip()]
+else:
+    USER_TG_IDS = []
+
+# Для backward compatibility - если указан старый USER_TG_ID
+USER_TG_ID_SINGLE = os.getenv("USER_TG_ID", "").strip()
+if USER_TG_ID_SINGLE and int(USER_TG_ID_SINGLE) not in USER_TG_IDS:
+    USER_TG_IDS.append(int(USER_TG_ID_SINGLE))
+
+# Для GAS запросов берем первого из списка (главный пользователь)
+USER_TG_ID = USER_TG_IDS[0] if USER_TG_IDS else 0
 
 # Для webhook (Railway)
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
@@ -46,8 +60,8 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing")
 if not SCRIPT_URL:
     raise RuntimeError("SCRIPT_URL is missing")
-if not USER_TG_ID:
-    raise RuntimeError("USER_TG_ID is missing")
+if not USER_TG_IDS:
+    raise RuntimeError("USER_TG_IDS is missing")
 
 
 def _default_webhook_path() -> str:
@@ -159,8 +173,11 @@ async def delete_working_message(context: ContextTypes.DEFAULT_TYPE, chat_id: in
 # Helpers: keyboards
 # =========================
 def is_allowed(update: Update) -> bool:
+    """Проверка доступа - разрешен ли пользователь"""
     user = update.effective_user
-    return bool(user and user.id == USER_TG_ID)
+    if not user:
+        return False
+    return user.id in USER_TG_IDS
 
 
 def kb_main(account_type: str = "personal") -> InlineKeyboardMarkup:
@@ -860,3 +877,4 @@ def run():
 
 if __name__ == "__main__":
     run()
+```
